@@ -16,29 +16,22 @@ def MCRFromKSlinesUsingAdj_gpu(KS_acq, R1, R2, S1, S2, KS_lines, anim=False):
     D, H, N = KS_acq.shape
     W = R1.shape[2]
 
-    # prepare output accumulators
     I_rec = torch.zeros((D,H,W), dtype=torch.complex64, device=device)
     frames = []
 
     for n, ky in enumerate(KS_lines):
-        # put line back into k-space volume
+
         Fvol = torch.zeros((D,H,W), dtype=torch.complex64, device=device)
         Fvol[:,:,ky] = KS_acq[:,:,n]
 
-        # undo shift + invert
         Fu = torch.fft.ifftshift(Fvol, dim=(0,1,2))
         Ivol = torch.fft.ifftn(Fu, dim=(0,1,2))
 
-        # run adjoint warp + gather weights
         I_def, weights = deformImWithModelAdjoint_gpu(Ivol, R1, R2, float(S1[n]), float(S2[n]))
-
-        # avoid division by zero
         w = weights.clone()
         w[w==0] = 1.0
 
         I_rec += I_def / w
-
-        # optionally collect an animation frame
         if anim:
             zmid = D//2
             img = I_rec[zmid].abs()

@@ -1,66 +1,48 @@
 import torch
 import torch.nn.functional as F
 
+def _gauss1d(sigma, device):
+    radius = int(3.0 * sigma + 0.5)
+    radius = max(radius, 1)
+    x = torch.arange(-radius, radius + 1, dtype=torch.float32, device=device)
+    k = torch.exp(-0.5 * (x / sigma) ** 2)
+    k = k / k.sum()
+    return k
 
-def gaussian_kernel1d(kernel_size: int, sigma: float, device: torch.device) -> torch.Tensor:
+def gaussian_blur_3d(x, sigma):
     """
-    Creates a 1D Gaussian kernel.
-
-    Args:
-        kernel_size (int): Length of the kernel (must be odd).
-        sigma (float): Standard deviation of the Gaussian.
-        device (torch.device): Device to create the kernel on.
-
-    Returns:
-        torch.Tensor: 1D kernel of shape [kernel_size].
+    x: [D,H,W] or [D,H,W,3] float tensor on CUDA
+    sigma: float
     """
-    # Create a symmetric range centered at zero
-    coords = torch.arange(kernel_size, dtype=torch.float32, device=device) - (kernel_size - 1) / 2
-    kernel = torch.exp(-0.5 * (coords / sigma) ** 2)
-    kernel = kernel / kernel.sum()
-    return kernel
+    if sigma <= 0:
+        return x
 
-
-def gaussian_3D(
-    x: torch.Tensor,
-    kernel_size: int = 5,
-    sigma: float = 1.0
-) -> torch.Tensor:
-    """
-    Applies a 3D Gaussian blur to a 5D tensor using separable 1D convolutions.
-
-    Args:
-        x (torch.Tensor): Input tensor of shape [B, C, D, H, W].
-        kernel_size (int): Size of the Gaussian kernel in each dimension (must be odd).
-        sigma (float): Standard deviation of the Gaussian kernel.
-
-    Returns:
-        torch.Tensor: Blurred tensor of the same shape as input.
-    """
-    
-    # print(f"Gaussian filter is being applied onto the tensor with size {x.shape}")
-    
-    if kernel_size % 2 == 0:
-        raise ValueError("kernel_size must be odd")
-
-    B, C, D, H, W = x.shape
     device = x.device
+    k1d = _gauss1d(sigma, device) 
+    ksz = k1d.numel()
+    pad = ksz // 2
 
-    # Create 1D Gaussian kernel
-    k1d = gaussian_kernel1d(kernel_size, sigma, device)  # [K]
-
-    # Reshape for separable convolution
-    kz = k1d.view(1, 1, kernel_size, 1, 1).repeat(C, 1, 1, 1, 1)
-    ky = k1d.view(1, 1, 1, kernel_size, 1).repeat(C, 1, 1, 1, 1)
-    kx = k1d.view(1, 1, 1, 1, kernel_size).repeat(C, 1, 1, 1, 1)
-
-    pad = kernel_size // 2
-
-    # Apply depth (D) blur
-    out = F.conv3d(x, weight=kz, padding=(pad, 0, 0), groups=C)
-    # Apply height (H) blur
-    out = F.conv3d(out, weight=ky, padding=(0, pad, 0), groups=C)
-    # Apply width (W) blur
-    out = F.conv3d(out, weight=kx, padding=(0, 0, pad), groups=C)
-
-    return out
+    if x.dim() == 4:  # [D,H,W,3]
+        x_ = x.permute(3, 0, 1, 2).unsqueeze(0)  # [1,C,D,H,W]
+        C = x_.shape[1]
+        # build grouped weights
+        wz = k1d.view(1, 1, ksz, 1, 1).repeat(C, 1, 1, 1, 1)   # [C,1,K,1,1]
+        wy = k1d.view(1, 1, 1, ksz, 1).repeat(C, 1, 1, 1, 1)
+        wx = k1d.view(1, 1, 1, 1, ksz).repeat(C, 1, 1, 1, 1)
+        # depth
+        x_ = F.conv3d(x_, wz, padding=(pad, 0, 0), groups=C)
+        # height
+        x_ = F.conv3d(x_, wy, padding=(0, pad, 0), groups=C)
+        # width
+        x_ = F.conv3d(x_, wx, padding=(0, 0, pad), groups=C)
+        x_ = x_.squeeze(0).permute(1, 2, 3, 0)  # back to [D,H,W,3]
+        return x_
+    else:  # [D,H,W]
+        x_ = x.unsqueeze(0).unsqueeze(0)  # [1,1,D,H,W]
+        wz = k1d.view(1, 1, ksz, 1, 1)
+        wy = k1d.view(1, 1, 1, ksz, 1)
+        wx = k1d.view(1, 1, 1, 1, ksz)
+        x_ = F.conv3d(x_, wz, padding=(pad, 0, 0))
+        x_ = F.conv3d(x_, wy, padding=(0, pad, 0))
+        x_ = F.conv3d(x_, wx, padding=(0, 0, pad))
+        return x_.squeeze(0).squeeze(0)

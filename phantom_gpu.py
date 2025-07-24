@@ -2,11 +2,11 @@ import torch
 
 def phantom3d_gpu(definition=None, n=128, device='cuda'):
     """
-    3D ellipsoid phantom, with per-ellipsoid rotation (torch GPU).
-    definition: None or numpy array of ellipsoid parameters (m x 10).
+    3D ellipsoid phantom, with per-ellipsoid rotation.
+    definition: Tensor of ellipsoid parameters (m x 10).
     n: volume size.
     """
-    # Default Shepp-Logan-like ellipsoids if definition is None (identical to original).
+   
     if definition is None:
         E = torch.tensor([
             [1140, 0.9,  0.6,   5,  0,   0, 0, 0, 0, 0],
@@ -25,7 +25,7 @@ def phantom3d_gpu(definition=None, n=128, device='cuda'):
     if E.ndim != 2 or E.shape[1] != 10:
         raise ValueError("Need shape (m,10): [A,a,b,c,x0,y0,z0,phi,theta,psi]")
 
-    # Create normalized grid (coords in [-1,1]) on GPU
+    # Create normalized grid (coords in [-1,1]) 
     coords = torch.linspace(-1, 1, n, device=device)
     Zg, Yg, Xg = torch.meshgrid(coords, coords, coords, indexing='ij')
     pts = torch.stack([Xg.flatten(), Yg.flatten(), Zg.flatten()], dim=1)  # (n^3, 3)
@@ -34,7 +34,7 @@ def phantom3d_gpu(definition=None, n=128, device='cuda'):
     deg2rad = torch.tensor(torch.pi/180.0, device=device)
     for ell in E:
         A, a, b, c, x0, y0, z0, phi, theta, psi = ell.tolist()
-        # Build rotation matrices (torch)
+        # Build rotation matrices
         p = phi * deg2rad; t = theta * deg2rad; s = psi * deg2rad
         Rz = torch.tensor([[ torch.cos(p), -torch.sin(p), 0],
                            [ torch.sin(p),  torch.cos(p), 0],
@@ -47,7 +47,7 @@ def phantom3d_gpu(definition=None, n=128, device='cuda'):
                            [0, torch.sin(s),  torch.cos(s)]], device=device)
         R = Rx @ Ry @ Rz  # Combine rotations
 
-        # Translate & rotate points (move to GPU)
+        # Translate & rotate points
         centered = pts - torch.tensor([x0, y0, z0], device=device)
         primed = centered @ R.T  # shape (n^3, 3)
 

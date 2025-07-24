@@ -5,9 +5,6 @@ import matplotlib as mpl
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 mpl.rcParams["animation.ffmpeg_path"] = r"D:\Software\ffmpeg\ffmpeg\bin\ffmpeg.exe"
 def save_animation_gpu(anim_mov_acq, output_path='anim.mp4', fps=10, dpi=300):
-    """
-    GPU-version: actually just uses CPU for animation (no heavy math).
-    """
     fig, ax = plt.subplots()
     im = ax.imshow(anim_mov_acq[0], cmap='gray')
     ax.axis('off'); plt.tight_layout()

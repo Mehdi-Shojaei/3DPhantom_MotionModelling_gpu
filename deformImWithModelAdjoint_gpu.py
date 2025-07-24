@@ -3,7 +3,7 @@ import numpy as np
 def deformImWithModelAdjoint_gpu(I, R1, R2, s1, s2, def_xs=None, def_ys=None, def_zs=None):
     """
     Adjoint deformation (pull-based) of a 3D complex volume I using motion model fields R1, R2
-    and surrogate signals s1, s2. GPU-compatible via PyTorch.
+    and surrogate signals s1, s2. 
 
     Parameters:
     -----------
@@ -28,8 +28,6 @@ def deformImWithModelAdjoint_gpu(I, R1, R2, s1, s2, def_xs=None, def_ys=None, de
         Sum of interpolation weights at each voxel (for normalization).
     """
     D, H, W = I.shape
-
-    # default to full volume if no region specified
     if ((def_xs is None) != (def_ys is None)) \
     or ((def_xs is None) != (def_zs is None)):
         raise ValueError("Must specify all of def_xs, def_ys, def_zs or none.")
@@ -39,23 +37,20 @@ def deformImWithModelAdjoint_gpu(I, R1, R2, s1, s2, def_xs=None, def_ys=None, de
         def_ys = torch.arange(H)
         def_zs = torch.arange(D)
     else:
-        # safely convert all three to int arrays
         def_xs = torch.tensor(def_xs, int)
         def_ys = torch.tensor(def_ys, int)
         def_zs = torch.tensor(def_zs, int)
 
-    # build 3D meshgrid in (Z,Y,X) order
+    # (Z,Y,X) order
     Zg, Yg, Xg = torch.meshgrid(def_zs, def_ys, def_xs, indexing='ij')
     Zg = Zg.to("cuda")
     Yg = Yg.to("cuda")
     Xg = Xg.to("cuda")
-
-    # compute total displacements
+    
     TX = s1 * R1[Zg, Yg, Xg, 2] + s2 * R2[Zg, Yg, Xg, 2]
     TY = s1 * R1[Zg, Yg, Xg, 1] + s2 * R2[Zg, Yg, Xg, 1]
     TZ = s1 * R1[Zg, Yg, Xg, 0] + s2 * R2[Zg, Yg, Xg, 0]
 
-    # warped floating-point coordinates
     def_X0 = Xg + TX
     def_Y0 = Yg + TY
     def_Z0 = Zg + TZ
@@ -67,21 +62,18 @@ def deformImWithModelAdjoint_gpu(I, R1, R2, s1, s2, def_xs=None, def_ys=None, de
         (def_Z0 < 0) | (def_Z0 >= D-1)
     )
 
-    # flatten arrays
     def_Xf = def_X0.flatten()
     def_Yf = def_Y0.flatten()
     def_Zf = def_Z0.flatten()
     I_flat = I.flatten()
     oob_flat = oob.flatten()
 
-    # only keep valid points
     valid = ~oob_flat
     Xf = def_Xf[valid]
     Yf = def_Yf[valid]
     Zf = def_Zf[valid]
     Ivals = I_flat[valid]
 
-    # integer floors
     Xi = torch.floor(Xf).long()
     Yi = torch.floor(Yf).long()
     Zi = torch.floor(Zf).long()
@@ -114,13 +106,11 @@ def deformImWithModelAdjoint_gpu(I, R1, R2, s1, s2, def_xs=None, def_ys=None, de
     w011 = (1 - wx) * wy      * wz
     w111 =  wx      * wy      * wz
 
-    # allocate flattened outputs
     size = D * H * W
     I_def_flat   = torch.zeros(size, dtype=I.dtype, device = "cuda")
     weights_flat = torch.zeros(size, dtype=torch.float32, device="cuda")
 
-    # scatter-add contributions
-# For your volume
+    # volume
     I_def_flat.scatter_add_(0, idx000, Ivals * w000)
     I_def_flat.scatter_add_(0, idx100, Ivals * w100)
     I_def_flat.scatter_add_(0, idx010, Ivals * w010)
@@ -130,7 +120,7 @@ def deformImWithModelAdjoint_gpu(I, R1, R2, s1, s2, def_xs=None, def_ys=None, de
     I_def_flat.scatter_add_(0, idx011, Ivals * w011)
     I_def_flat.scatter_add_(0, idx111, Ivals * w111)
 
-    # For your weights
+    # weights
     weights_flat.scatter_add_(0, idx000, w000)
     weights_flat.scatter_add_(0, idx100, w100)
     weights_flat.scatter_add_(0, idx010, w010)
