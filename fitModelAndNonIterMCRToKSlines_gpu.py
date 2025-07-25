@@ -14,7 +14,7 @@ from utils import reg_magnitude, huber_loss
 from display_Rs import display
 import SimpleITK as sitk
 
-def fitModelAndNonIterMCRToKSlines_gpu(KS_acq, S1, S2, KS_lines,
+def fitModelAndNonIterMCRToKSlines_gpu(KS_acq, S1, S2, KS_lines, step_test=True,
                                    anim=True, lambda_reg_mag = 1e-4,
                                    lims_R1_x=None, lims_R1_y=None, lims_R1_z=None,
                                    lims_R2_x=None, lims_R2_y=None, lims_R2_z=None,
@@ -107,18 +107,31 @@ def fitModelAndNonIterMCRToKSlines_gpu(KS_acq, S1, S2, KS_lines,
     D, H = KS_acq.shape[0], KS_acq.shape[1]
     W = I_size[2] if I_size is not None else H
 
-    if step_sizes_R is None:
+    if step_sizes_R is None and step_test is False:
         step_sizes_R = [2.0/x for x in (2,4,8,16,32,64,128,256)]
 
     KS_acq = KS_acq.to(device)
     anim_frames = []
     loss = []
-
+    
+    R1_fit = torch.zeros((D, H, W, 3), device=device)
+    R2_fit = torch.zeros((D, H, W, 3), device=device)
+    
+    if step_test:
+        m_R1 = torch.zeros_like(R1_fit, device=device)
+        m_R2 = torch.zeros_like(R1_fit, device=device)
+        v_R1 = torch.zeros_like(R1_fit, device=device)
+        v_R2 = torch.zeros_like(R1_fit, device=device)
+        lr=0.001 
+        beta1=0.9 
+        beta2=0.999 
+        eps=1e-8 
+        step_sizes_R=1000
+        
     for lev in range(1, num_lev+1):
         print(f"\n=== Level {lev} ===============================")
         if lev == 1:
-            R1_fit = torch.zeros((D, H, W, 3), device=device)
-            R2_fit = torch.zeros((D, H, W, 3), device=device)
+
             I_rec, _ = MCRFromKSlinesUsingAdj_gpu(KS_acq, R1_fit, R2_fit, S1_arr, S2_arr, KS_lines, anim=False)
             sigma_level = sigma*(2**(num_lev-2))
                       
@@ -186,6 +199,14 @@ def fitModelAndNonIterMCRToKSlines_gpu(KS_acq, S1, S2, KS_lines,
             #     dC_dR1 = (1 - lambda_reg_mag) * dC_dR1 - 2.0 * lambda_reg_mag * R1_fit
             #     dC_dR2 = (1 - lambda_reg_mag) * dC_dR2 - 2.0 * lambda_reg_mag * R2_fit
             
+            
+            # if step_test:
+            #     # Based on gradient norm
+            #     norm_grad = torch.norm(dC_dR1) + torch.norm(dC_dR2)
+            #     alpha_base = 1e+9/norm_grad  # starting scale
+            #     step_sizes_R = [alpha_base / (2 ** i) for i in range(1,5)]
+                
+
             if sigma_level > 0:
                 for c in range(3):
                     dC_dR1[:,:,:,c] = gaussian_blur_3d(dC_dR1[:,:,:,c], sigma = sigma_level)
@@ -195,16 +216,42 @@ def fitModelAndNonIterMCRToKSlines_gpu(KS_acq, S1, S2, KS_lines,
                 dC_dR1 /= maxg
                 dC_dR2 /= maxg
 
-            for step in step_sizes_R:
-                print(f"   Testing step size {step}")
+            # for step in step_sizes_R: # commented for the sake of Adam
+            for step in range(len(step_sizes_R)):
+               
+                print(f"   Testing step size {step_sizes_R[step]}")
                 improvement = True
                 while improvement:
                     
-                    R1_new = R1_fit - step * dC_dR1 #changed to negative since -2diff is already accounted for
-                    R2_new = R2_fit - step * dC_dR2
+                    if step_test:
+                        m_R1 = beta1 * m_R1 + (1 - beta1) * dC_dR1 #first momentum (mean). EMA
+                        m_R2 = beta1 * m_R2 + (1 - beta1) * dC_dR2 
+                        
+                        v_R1 = beta2 * v_R1 + (1 - beta2) * dC_dR1 ** 2 # second momentum (var)
+                        v_R2 = beta2 * v_R2 + (1 - beta2) * dC_dR2 ** 2
+                        
+                        m_R1_hat = m_R1 / (1 - beta1 ** step_sizes_R[step]) # inital bias
+                        m_R2_hat = m_R2 / (1 - beta1 ** step_sizes_R[step])
+                        
+                        v_R1_hat = v_R1 / (1 - beta2 ** step_sizes_R[step])
+                        v_R2_hat = v_R2 / (1 - beta2 ** step_sizes_R[step])
+                        
+                        R1_new = R1_fit - lr * m_R1_hat / (torch.sqrt(v_R1_hat) + eps)
+                        R2_new = R2_fit - lr * m_R2_hat / (torch.sqrt(v_R2_hat) + eps)
+                        
+                    else:
+                        R1_new = R1_fit - step_sizes_R[step] * dC_dR1 # changed to negative since -2diff is already accounted for
+                        R2_new = R2_fit - step_sizes_R[step] * dC_dR2
+                        
+                        
+                    # restrict if needed just for testing
+                    # R1_new = torch.clamp(R1_new, -50, 50)
+                    # R2_new = torch.clamp(R2_new, -50, 50)
+                    
+                    
                     KS_sim_new, anim2 = simAcquireAllKSlines_gpu(I_rec, R1_new, R2_new, S1_arr, S2_arr, KS_lines, noise=0, anim=anim)
                     if anim:
-                        save_animation_gpu(anim2, f'I_rec_test_GPU_level_{lev}/anim_{step}.mp4')
+                        save_animation_gpu(anim2, f'I_rec_test_GPU_level_{lev}/anim_{step_sizes_R[step]}.mp4')
                     diff_new = KS_acq - KS_sim_new
                     
                     
@@ -224,7 +271,7 @@ def fitModelAndNonIterMCRToKSlines_gpu(KS_acq, S1, S2, KS_lines,
                         except KeyError as exc:
                             raise ValueError("loss_f must be 'L1', 'L2' or 'HuberLoss'") from exc
                     loss.append(C_new)
-                    print(f"R step size: {step:.6f}, New cost function: {C_new:g}")
+                    print(f"R step size: {step_sizes_R[step]:.4f}, New cost function: {C_new:g}")
 
                     if C_new < C:
                         C = C_new
@@ -237,7 +284,7 @@ def fitModelAndNonIterMCRToKSlines_gpu(KS_acq, S1, S2, KS_lines,
                             RGB = display(I_rec, R1_fit, R2_fit,
                                     lims_R1_x, lims_R1_y, lims_R1_z,
                                     lims_R2_x, lims_R2_y, lims_R2_z,
-                                    lev, step, iter_count,
+                                    lev, step_sizes_R[step], iter_count,
                                     save_dir='I_rec_test_GPU_level')
                             anim_frames.append(RGB)
                     else:
@@ -263,7 +310,7 @@ def fitModelAndNonIterMCRToKSlines_gpu(KS_acq, S1, S2, KS_lines,
                     RGB = display(I_rec, R1_fit, R2_fit,
                             lims_R1_x, lims_R1_y, lims_R1_z,
                             lims_R2_x, lims_R2_y, lims_R2_z,
-                            lev, step, iter_count,
+                            lev, step_sizes_R[step], iter_count,
                             save_dir='I_rec_test_GPU_level')
                     anim_frames.append(RGB)
                 if anim:
